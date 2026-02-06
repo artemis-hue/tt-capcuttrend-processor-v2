@@ -964,6 +964,281 @@ def create_enhanced_excel(
 
 
 # =============================================================================
+# DAILY BRIEFING - STRATEGIC ANALYSIS TEXT
+# =============================================================================
+
+def generate_daily_briefing(
+    df_today: pd.DataFrame,
+    df_yesterday: pd.DataFrame = None,
+    output_dir: str = '.',
+    cache_path: str = None
+) -> str:
+    """
+    Generate written daily briefing with:
+    1. Immediate Actions - top trends to build RIGHT NOW
+    2. Strategic Insights - competitor analysis across ALL 6 competitors
+    
+    Returns the briefing text.
+    """
+    from datetime import datetime
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    lines = []
+    lines.append("=" * 60)
+    lines.append(f"DAILY BRIEFING - {date_str}")
+    lines.append("TikTok Trend System v3.5.0")
+    lines.append("=" * 60)
+    
+    df = df_today.copy()
+    df = _ensure_calculated_metrics(df)
+    
+    # --- SECTION 1: IMMEDIATE ACTIONS ---
+    lines.append("")
+    lines.append("━" * 60)
+    lines.append("🔴 IMMEDIATE ACTIONS")
+    lines.append("━" * 60)
+    
+    # Calculate velocity if yesterday available
+    has_velocity = False
+    if df_yesterday is not None and len(df_yesterday) > 0:
+        velocity_df = calculate_velocity_predictions(df, df_yesterday)
+        has_velocity = True
+    else:
+        velocity_df = df.copy()
+        velocity_df['velocity'] = 0
+        velocity_df['action_window'] = 'MONITOR'
+        velocity_df['trajectory'] = 'FLAT'
+        velocity_df['predicted_24h'] = velocity_df.get('momentum_score', 0)
+    
+    # Filter: fresh content under 48h with momentum >= 500
+    fresh = velocity_df[velocity_df['age_hours'] <= 48].copy() if 'age_hours' in velocity_df.columns else velocity_df.copy()
+    if 'momentum_score' in fresh.columns:
+        fresh = fresh[fresh['momentum_score'] >= 500]
+    
+    # Exclude your own posts and competitor posts
+    if 'author' in fresh.columns:
+        all_tracked = [a.lower() for a in YOUR_ACCOUNTS + COMPETITOR_ACCOUNTS]
+        fresh = fresh[~fresh['author'].str.lower().isin(all_tracked)]
+    
+    # Sort by momentum
+    if len(fresh) > 0 and 'momentum_score' in fresh.columns:
+        fresh = fresh.nlargest(5, 'momentum_score')
+    
+    if len(fresh) == 0:
+        lines.append("")
+        lines.append("No high-priority trends found meeting criteria (age <48h, momentum >=500).")
+    else:
+        for i, (_, row) in enumerate(fresh.iterrows(), 1):
+            momentum = _safe_int_val(row.get('momentum_score', 0))
+            age = round(float(row.get('age_hours', 0)), 1) if pd.notna(row.get('age_hours')) else 0
+            shares_h = round(float(row.get('shares_per_hour', 0)), 1) if pd.notna(row.get('shares_per_hour')) else 0
+            trend_text = str(row.get('text') if pd.notna(row.get('text')) else '')[:60]
+            creator = str(row.get('author') if pd.notna(row.get('author')) else 'Unknown')[:20]
+            market = str(row.get('Market', '')) if pd.notna(row.get('Market')) else ''
+            
+            # Action window
+            action = str(row.get('action_window', '')) if has_velocity else ''
+            trajectory = str(row.get('trajectory', '')) if has_velocity else ''
+            vel = row.get('velocity', 0) if has_velocity else 0
+            vel = vel if pd.notna(vel) else 0
+            pred_24 = row.get('predicted_24h', momentum) if has_velocity else momentum
+            pred_24 = pred_24 if pd.notna(pred_24) else momentum
+            
+            hours_left = max(0, 72 - age)
+            
+            lines.append("")
+            lines.append(f"  #{i}. {trend_text}")
+            lines.append(f"      Creator: {creator} | {market}")
+            lines.append(f"      Momentum: {momentum:,} | Shares/h: {shares_h}")
+            lines.append(f"      Age: {age}h | Window: {hours_left:.0f}h remaining")
+            if has_velocity:
+                lines.append(f"      Velocity: {vel:+,.0f}/day | Predicted 24h: {int(pred_24):,}")
+                lines.append(f"      Action: {action} | Trajectory: {trajectory}")
+            
+            # Why this trend
+            reasons = []
+            if momentum >= 3000: reasons.append("URGENT momentum")
+            elif momentum >= 2000: reasons.append("HIGH momentum")
+            if shares_h >= 100: reasons.append(f"very high share rate ({shares_h}/h)")
+            elif shares_h >= 25: reasons.append(f"strong share rate ({shares_h}/h)")
+            if '🌐 BOTH' in market: reasons.append("trending in BOTH markets (2x revenue potential)")
+            if has_velocity and vel > 200: reasons.append("EXPLOSIVE growth trajectory")
+            elif has_velocity and vel > 100: reasons.append("strong upward velocity")
+            if hours_left < 24: reasons.append(f"only {hours_left:.0f}h left in 72h window")
+            
+            if reasons:
+                lines.append(f"      Why: {'; '.join(reasons)}")
+    
+    # --- SECTION 2: COMPETITOR ANALYSIS ---
+    lines.append("")
+    lines.append("━" * 60)
+    lines.append("📊 STRATEGIC INSIGHTS - COMPETITOR ANALYSIS")
+    lines.append("━" * 60)
+    
+    # Find all competitor posts
+    comp_posts = pd.DataFrame()
+    your_posts = pd.DataFrame()
+    if 'author' in df.columns:
+        comp_mask = df['author'].str.lower().isin([a.lower() for a in COMPETITOR_ACCOUNTS])
+        your_mask = df['author'].str.lower().isin([a.lower() for a in YOUR_ACCOUNTS])
+        comp_posts = df[comp_mask].copy()
+        your_posts = df[your_mask].copy()
+    
+    lines.append("")
+    lines.append(f"  Your posts in trending: {len(your_posts)}")
+    lines.append(f"  Competitor posts in trending: {len(comp_posts)}")
+    
+    if len(comp_posts) == 0:
+        lines.append("")
+        lines.append("  No competitor posts found in today's trending data.")
+        lines.append("  This could mean they're not posting, or their posts aren't trending.")
+    else:
+        # Per-competitor breakdown
+        lines.append("")
+        lines.append("  COMPETITOR BREAKDOWN:")
+        comp_by_account = comp_posts.groupby('author').agg(
+            posts=('author', 'size'),
+            avg_momentum=('momentum_score', 'mean'),
+            max_momentum=('momentum_score', 'max'),
+            total_momentum=('momentum_score', 'sum')
+        ).sort_values('total_momentum', ascending=False)
+        
+        for account, row in comp_by_account.iterrows():
+            lines.append(f"    {account}: {int(row['posts'])} posts | "
+                        f"avg momentum {int(row['avg_momentum']):,} | "
+                        f"best {int(row['max_momentum']):,}")
+        
+        # Gap analysis - trends competitors caught that you missed
+        lines.append("")
+        lines.append("  GAP ANALYSIS - TRENDS THEY CAUGHT, YOU DIDN'T:")
+        
+        # Get your URLs
+        your_urls = set(your_posts['webVideoUrl']) if len(your_posts) > 0 else set()
+        
+        # For each competitor post, find the underlying trend
+        # A "missed" trend is where a competitor posted on a trending topic but none of your accounts did
+        # We approximate this by checking if your accounts appear for similar content
+        # Simpler: just show their highest momentum posts you don't have
+        missed = comp_posts[~comp_posts['webVideoUrl'].isin(your_urls)].copy()
+        missed = missed.nlargest(min(5, len(missed)), 'momentum_score')
+        
+        if len(missed) == 0:
+            lines.append("    None! You covered all trends they did. 🎯")
+        else:
+            total_missed_revenue = 0
+            for _, row in missed.iterrows():
+                m = _safe_int_val(row.get('momentum_score', 0))
+                text = str(row.get('text') if pd.notna(row.get('text')) else '')[:50]
+                account = str(row.get('author', ''))
+                age = round(float(row.get('age_hours', 0)), 1) if pd.notna(row.get('age_hours')) else 0
+                est_rev = round(m / 1000 * 5, 2)
+                total_missed_revenue += est_rev
+                
+                lines.append(f"    • {text}")
+                lines.append(f"      By: {account} | Momentum: {m:,} | Age: {age}h | Est. missed: £{est_rev:.0f}")
+            
+            lines.append(f"    Total estimated missed revenue: £{total_missed_revenue:.0f}")
+        
+        # Head-to-head comparison
+        lines.append("")
+        lines.append("  HEAD-TO-HEAD SCORECARD:")
+        your_avg_m = int(your_posts['momentum_score'].mean()) if len(your_posts) > 0 else 0
+        comp_avg_m = int(comp_posts['momentum_score'].mean()) if len(comp_posts) > 0 else 0
+        your_total = int(your_posts['momentum_score'].sum()) if len(your_posts) > 0 else 0
+        comp_total = int(comp_posts['momentum_score'].sum()) if len(comp_posts) > 0 else 0
+        
+        your_spiking = len(your_posts[your_posts.get('status', your_posts.get('acceleration_status', pd.Series())).str.contains('SPIKING', na=False)]) if len(your_posts) > 0 else 0
+        comp_spiking = len(comp_posts[comp_posts.get('status', comp_posts.get('acceleration_status', pd.Series())).str.contains('SPIKING', na=False)]) if len(comp_posts) > 0 else 0
+        
+        lines.append(f"    Metric              YOU          COMPETITORS")
+        lines.append(f"    Posts in trending    {len(your_posts):<12} {len(comp_posts)}")
+        lines.append(f"    Avg momentum        {your_avg_m:<12,} {comp_avg_m:,}")
+        lines.append(f"    Total momentum      {your_total:<12,} {comp_total:,}")
+        lines.append(f"    SPIKING posts       {your_spiking:<12} {comp_spiking}")
+        
+        if your_total > comp_total:
+            lines.append(f"    → You're WINNING overall ({your_total:,} vs {comp_total:,})")
+        elif comp_total > your_total:
+            lines.append(f"    → Competitors AHEAD ({comp_total:,} vs {your_total:,}) - find more trends!")
+        else:
+            lines.append(f"    → Even match")
+        
+        # Niche analysis
+        if 'AI_CATEGORY' in comp_posts.columns:
+            comp_ai = len(comp_posts[comp_posts['AI_CATEGORY'] == 'AI'])
+            comp_non = len(comp_posts[comp_posts['AI_CATEGORY'] == 'NON-AI'])
+            your_ai = len(your_posts[your_posts['AI_CATEGORY'] == 'AI']) if len(your_posts) > 0 and 'AI_CATEGORY' in your_posts.columns else 0
+            your_non = len(your_posts[your_posts['AI_CATEGORY'] == 'NON-AI']) if len(your_posts) > 0 and 'AI_CATEGORY' in your_posts.columns else 0
+            
+            lines.append("")
+            lines.append("  NICHE COVERAGE:")
+            lines.append(f"    AI trends:     YOU {your_ai} vs COMP {comp_ai}")
+            lines.append(f"    NON-AI trends: YOU {your_non} vs COMP {comp_non}")
+            
+            if comp_ai > your_ai * 2 and comp_ai >= 3:
+                lines.append(f"    ⚠️ Competitors are covering more AI trends - consider increasing AI template output")
+            if comp_non > your_non * 2 and comp_non >= 3:
+                lines.append(f"    ⚠️ Competitors are covering more NON-AI trends - diversify beyond AI")
+        
+        # Market coverage
+        if 'Market' in comp_posts.columns:
+            comp_both = len(comp_posts[comp_posts['Market'].str.contains('BOTH', na=False)])
+            your_both = len(your_posts[your_posts['Market'].str.contains('BOTH', na=False)]) if len(your_posts) > 0 and 'Market' in your_posts.columns else 0
+            
+            if comp_both > 0:
+                lines.append("")
+                lines.append(f"  CROSS-MARKET: Competitors have {comp_both} BOTH-market posts vs your {your_both}")
+                if comp_both > your_both:
+                    lines.append(f"    ⚠️ They're better at catching cross-market trends (2x revenue potential)")
+    
+    # --- SECTION 3: RECOMMENDATIONS ---
+    lines.append("")
+    lines.append("━" * 60)
+    lines.append("💡 RECOMMENDATIONS")
+    lines.append("━" * 60)
+    lines.append("")
+    
+    recs = []
+    if len(fresh) > 0:
+        top = fresh.iloc[0]
+        top_text = str(top.get('text') if pd.notna(top.get('text')) else 'Unknown trend')[:40]
+        recs.append(f"1. BUILD NOW: Start with \"{top_text}\" - highest priority opportunity")
+    
+    if len(comp_posts) > 0 and len(missed) > 0:
+        recs.append(f"2. Check {len(missed)} trends competitors caught that you missed - potential revenue gap")
+    
+    if len(your_posts) == 0:
+        recs.append("3. ⚠️ None of your posts are in today's trending - check posting schedule")
+    
+    if has_velocity:
+        explosive = velocity_df[velocity_df.get('trajectory', pd.Series()) == 'EXPLOSIVE'] if 'trajectory' in velocity_df.columns else pd.DataFrame()
+        if len(explosive) > 0:
+            recs.append(f"4. {len(explosive)} EXPLOSIVE trajectories detected - these will peak within 24h")
+    
+    if not recs:
+        recs.append("Continue monitoring - no urgent action items today")
+    
+    for r in recs:
+        lines.append(f"  {r}")
+    
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("END OF DAILY BRIEFING")
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
+def _safe_int_val(val, default=0):
+    """Safe int conversion for briefing text."""
+    try:
+        if pd.isna(val):
+            return default
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+# =============================================================================
 # INTEGRATION WITH EXISTING SYSTEM
 # =============================================================================
 

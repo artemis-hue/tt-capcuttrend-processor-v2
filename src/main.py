@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from apify_fetcher import fetch_all_data
 from daily_processor import process_data, load_yesterday_cache, save_today_cache, calculate_metrics
 from discord_notify import send_discord_notification
+from v35_enhancements import integrate_with_daily_processor, generate_daily_briefing
 import pandas as pd
 
 
@@ -169,6 +170,76 @@ def main():
     # Add enhancement info to stats for Discord
     if enhanced_files:
         stats['enhanced_files'] = len(enhanced_files)
+    
+    # Step 3c: Generate daily briefing and append to SUMMARY_REPORT
+    print("\n[Step 3c] Generating daily briefing...")
+    try:
+        # Combine US + UK for full-picture briefing
+        combined_df = pd.concat(
+            [df for df in [
+                pd.DataFrame(us_data) if us_data else pd.DataFrame(),
+                pd.DataFrame(uk_data) if uk_data else pd.DataFrame()
+            ] if len(df) > 0],
+            ignore_index=True
+        )
+        
+        if len(combined_df) > 0:
+            combined_df = combined_df.drop_duplicates(subset=['webVideoUrl'], keep='first')
+            combined_df = calculate_metrics(combined_df)
+            from daily_processor import get_author_name, detect_ai, calculate_status, calculate_build_now
+            combined_df['author'] = combined_df.apply(get_author_name, axis=1)
+            combined_df['AI_CATEGORY'] = combined_df.get('text', pd.Series([''])).apply(detect_ai)
+            
+            # Cross-market detection
+            us_urls = set(pd.DataFrame(us_data)['webVideoUrl']) if us_data else set()
+            uk_urls = set(pd.DataFrame(uk_data)['webVideoUrl']) if uk_data else set()
+            both_urls = us_urls & uk_urls
+            combined_df['Market'] = combined_df['webVideoUrl'].apply(
+                lambda u: '🌐 BOTH' if u in both_urls else '🇺🇸/🇬🇧 SINGLE'
+            )
+            
+            # Status calculation
+            combined_yesterday = None
+            if yesterday_us and yesterday_uk:
+                combined_yesterday = yesterday_us + yesterday_uk
+            elif yesterday_us:
+                combined_yesterday = yesterday_us
+            elif yesterday_uk:
+                combined_yesterday = yesterday_uk
+            combined_df = calculate_status(combined_df, combined_yesterday)
+            if 'status' in combined_df.columns:
+                combined_df['acceleration_status'] = combined_df['status']
+            
+            # Yesterday as DataFrame for velocity
+            yesterday_combined_df = None
+            if combined_yesterday:
+                yesterday_combined_df = pd.DataFrame(combined_yesterday)
+            
+            cache_dir_path = os.environ.get('CACHE_DIR', 'data')
+            streak_cache = os.path.join(cache_dir_path, 'velocity_streak_cache.json')
+            
+            briefing_text = generate_daily_briefing(
+                combined_df, yesterday_combined_df,
+                output_dir, cache_path=streak_cache
+            )
+            
+            # Append to SUMMARY_REPORT
+            from datetime import datetime
+            today = datetime.now().strftime('%Y-%m-%d')
+            summary_path = f"{output_dir}/SUMMARY_REPORT_{today}.txt"
+            
+            with open(summary_path, 'a') as f:
+                f.write("\n\n")
+                f.write(briefing_text)
+            
+            print("  ✅ Daily briefing appended to SUMMARY_REPORT")
+        else:
+            print("  ⚠️ No data available for briefing")
+    except Exception as e:
+        print(f"  ❌ Briefing generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        print("  Continuing without briefing.")
     
     # Step 4: Save today's cache for tomorrow
     print("\n[Step 4] Saving cache for tomorrow...")
