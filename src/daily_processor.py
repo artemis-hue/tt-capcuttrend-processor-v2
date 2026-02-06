@@ -70,10 +70,18 @@ COMPETITOR_ACCOUNTS = [
 AI_KEYWORDS = [
     'artificial intelligence', 'capcut ai', 'capcutai', 'ai filter', 'ai effect',
     'ai generated', 'ai video', 'ai photo', 'ai template', 'aifilter', 'aieffect',
-    'ia filter', 'ia effect', 'ki filter', 'ki effect'  # International: Spanish/Portuguese, German
+    'filtro ki', 'filtro ia', 'ki filter', 'ia filter',  # International: German, Spanish/Portuguese
 ]
 
-AI_EXCLUSIONS = ['aicover', 'aivoice', 'aiart', 'airdrop', 'air', 'hair', 'fair', 'chair', 'stairs']
+# These short terms need word boundary matching (not substring)
+AI_KEYWORDS_WORD_BOUNDARY = ['#ia', '#ki', 'ia', 'ki']
+
+AI_EXCLUSIONS = [
+    'aicover', 'aivoice', 'aiart', 'airdrop', 'air', 'hair', 'fair', 'chair', 'stairs',
+    'kia', 'bikini', 'skiing', 'skirt', 'skin', 'kilo', 'kid', 'kids', 'kind', 'king',
+    'kiss', 'kit', 'kite', 'kitchen', 'hiking', 'liking', 'making', 'taking', 'waking',
+    'breaking', 'speaking', 'media', 'via'
+]
 
 # Colors
 CYAN_FILL = PatternFill(start_color="E0FFFF", end_color="E0FFFF", fill_type="solid")
@@ -133,10 +141,36 @@ def detect_ai(text):
         return 'NON-AI'
     text_lower = str(text).lower()
     
+    # Check multi-word/phrase keywords (substring match)
     for kw in AI_KEYWORDS:
         if kw in text_lower:
             return 'AI'
     
+    # Check short keywords with word boundary matching (#ia, #ki, ia, ki)
+    for kw in AI_KEYWORDS_WORD_BOUNDARY:
+        if kw.startswith('#'):
+            # Hashtag: match exactly as #word with boundary after
+            if re.search(r'(?:^|\s)' + re.escape(kw) + r'(?:\s|$)', text_lower):
+                return 'AI'
+        else:
+            # Standalone word: must be whole word
+            if re.search(r'\b' + re.escape(kw) + r'\b', text_lower):
+                # Check it's not part of an excluded word
+                match_pos = re.search(r'\b' + re.escape(kw) + r'\b', text_lower)
+                if match_pos:
+                    # Get the full word containing this match
+                    start = match_pos.start()
+                    end = match_pos.end()
+                    # Expand to find the full token
+                    while start > 0 and text_lower[start-1].isalnum():
+                        start -= 1
+                    while end < len(text_lower) and text_lower[end].isalnum():
+                        end += 1
+                    full_word = text_lower[start:end]
+                    if full_word not in AI_EXCLUSIONS:
+                        return 'AI'
+    
+    # Check words containing 'ai' with exclusion list
     for word in re.findall(r'\b\w*ai\w*\b', text_lower):
         if word not in AI_EXCLUSIONS:
             return 'AI'
